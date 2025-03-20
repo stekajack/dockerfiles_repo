@@ -8,7 +8,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     build-essential \
-    openssh-server \
     cmake \
     python3-venv \
     python3-dev \
@@ -20,13 +19,6 @@ RUN apt-get update && \
     git && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
-
-# Copy SSH keys from host into the image
-COPY docker_resources/ssh/ /etc/ssh/
-
-# Set correct permissions for SSH keys
-RUN chmod 600 /etc/ssh/ssh_host_* && \
-    chmod 644 /etc/ssh/ssh_host_*.pub
 
 WORKDIR /home/stekajack
 
@@ -42,7 +34,14 @@ ENV VIRTUAL_ENV="/home/stekajack/venv"
 RUN pip install --no-cache-dir \
     numpy \
     scipy \
-    cython 
+    cython \
+    matplotlib \
+    jupyterhub==3.1.1 \
+    git+https://github.com/katringoogoo/batchspawner.git@1.2.0+auth_fix \
+    nbclassic==0.3.7 \
+    jupyterlab-system-monitor \
+    jupyterlab-git \
+    jupyterlab-widgets
 
 # Clone the custom Espresso repository
 RUN git clone --branch sw_beta_MPI_wip https://github.com/stekajack/espresso_patched.git espresso
@@ -73,6 +72,5 @@ ENV OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
 
 # (Optional) Append environment settings to the bashrc
 RUN echo 'export ESPRESSOPATH="/home/stekajack/espresso/build/"' >> /home/stekajack/.bashrc
-# Keep the container running
-EXPOSE 22
-ENTRYPOINT ["/bin/bash", "-c", "service ssh start && tail -f /dev/null"]
+EXPOSE 8888
+CMD ["jupyterhub-singleuser", "--ip=0.0.0.0", "--port=8888", "--NotebookApp.token=''", "--NotebookApp.password=''"]
