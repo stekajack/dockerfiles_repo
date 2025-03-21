@@ -36,6 +36,7 @@ RUN pip install --no-cache-dir \
     scipy \
     cython \
     matplotlib \
+    pandas \
     jupyterhub==3.1.1 \
     git+https://github.com/katringoogoo/batchspawner.git@1.2.0+auth_fix \
     nbclassic==0.3.7 \
@@ -59,6 +60,14 @@ RUN git clone https://github.com/stekajack/pressomancy.git && \
     pip install -e .
 RUN mkdir DATA
 RUN mkdir UPLOAD_VIEW
+
+RUN git clone https://github.com/stekajack/espressoSq.git
+WORKDIR /home/stekajack/espressoSq
+RUN mkdir build && cd build && \
+    cmake .. && \
+    make -j$(nproc)
+RUN python3 setup.py build_ext --inplace
+WORKDIR /home/stekajack
 
 # Cleanup
 RUN rm -rf /var/cache/* /tmp/* /var/log/* /usr/share/doc/*
