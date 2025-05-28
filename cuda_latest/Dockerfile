@@ -1,5 +1,5 @@
 # Base image
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 # Set non-interactive frontend to suppress prompts
 ENV DEBIAN_FRONTEND=noninteractive
@@ -14,8 +14,9 @@ RUN apt-get update && \
     python3-pip \
     openmpi-bin \
     libboost-all-dev \
-    fftw3-dev \
+    libfftw3-dev \
     libfftw3-mpi-dev \
+    nvidia-cuda-toolkit \
     git && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
@@ -34,24 +35,15 @@ ENV VIRTUAL_ENV="/home/stekajack/venv"
 RUN pip install --no-cache-dir \
     numpy \
     scipy \
-    cython \
-    matplotlib \
-    pandas \
-    igraph \
-    jupyterhub==3.1.1 \
-    git+https://github.com/katringoogoo/batchspawner.git@1.2.0+auth_fix \
-    nbclassic==0.3.7 \
-    jupyterlab-system-monitor \
-    jupyterlab-git \
-    jupyterlab-widgets
+    "Cython>=0.29.28,<3.0.12"
 
 # Clone the custom Espresso repository
-RUN git clone --branch sw_beta_MPI_wip https://github.com/stekajack/espresso_patched.git espresso
+RUN git clone --branch dds_gpu_replica_field_tracking https://github.com/stekajack/espresso_patched.git espresso
 
 # Build Espresso
 WORKDIR /home/stekajack/espresso
 RUN mkdir build && cd build && \
-    cmake .. -DESPRESSO_BUILD_WITH_CUDA=OFF -DESPRESSO_BUILD_WITH_NLOPT=ON && \
+    cmake .. -DESPRESSO_BUILD_WITH_CUDA=ON && \
     make -j$(nproc)
 
 # Clone and Install Pressomancy
@@ -61,14 +53,6 @@ RUN git clone https://github.com/stekajack/pressomancy.git && \
     pip install -e .
 RUN mkdir DATA
 RUN mkdir UPLOAD_VIEW
-
-RUN git clone https://github.com/stekajack/espressoSq.git
-WORKDIR /home/stekajack/espressoSq
-RUN mkdir build && cd build && \
-    cmake .. && \
-    make -j$(nproc)
-RUN python3 setup.py build_ext --inplace
-WORKDIR /home/stekajack
 
 # Cleanup
 RUN rm -rf /var/cache/* /tmp/* /var/log/* /usr/share/doc/*
@@ -82,5 +66,6 @@ ENV OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
 
 # (Optional) Append environment settings to the bashrc
 RUN echo 'export ESPRESSOPATH="/home/stekajack/espresso/build/"' >> /home/stekajack/.bashrc
-EXPOSE 8888
-CMD ["jupyterhub-singleuser", "--ip=0.0.0.0", "--port=8888", "--NotebookApp.token=''", "--NotebookApp.password=''"]
+
+# Keep the container running
+ENTRYPOINT ["/bin/bash", "-c", "tail -f /dev/null"]
