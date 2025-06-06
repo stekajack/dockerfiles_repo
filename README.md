@@ -38,6 +38,7 @@ Helpful docker commands you might want to use:
 ```bash
 docker images # see images on your local machine
 docker run -it user/image_name:tag # run local container from local image
+docker run -v path_to_folder_host:path_to_folder_container --gpus all user/image_name:tag # bind a folder in you container to a folder on the host and enable GPU support
 docker tag image_name user/image_name:tag # tag an image to a particular user/tag (kinda like creating a repository on GitHub before pushing to it)
 docker push user/image_name:tag # push to your DockerHub repo
 ```
