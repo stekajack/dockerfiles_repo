@@ -50,7 +50,7 @@ WORKDIR /home/stekajack
 RUN git clone https://github.com/stekajack/pressomancy.git && \
     cd pressomancy && \
     pip install -e .
-RUN mkdir DATA
+RUN mkdir DATA_VIEW
 RUN mkdir UPLOAD_VIEW
 
 # Cleanup
