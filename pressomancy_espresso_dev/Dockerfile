@@ -1,5 +1,5 @@
 # Base image
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 # Set non-interactive frontend to suppress prompts
 ENV DEBIAN_FRONTEND=noninteractive
@@ -14,8 +14,9 @@ RUN apt-get update && \
     python3-pip \
     openmpi-bin \
     libboost-all-dev \
-    fftw3-dev \
+    libfftw3-dev \
     libfftw3-mpi-dev \
+    # nvidia-cuda-toolkit \
     git && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
@@ -34,22 +35,20 @@ ENV VIRTUAL_ENV="/home/stekajack/venv"
 RUN pip install --no-cache-dir \
     numpy \
     scipy \
-    cython 
+    "Cython>=0.29.28,<3.0.12"
 
 # Clone the custom Espresso repository
-RUN git clone --branch milestone_4.2.2 https://github.com/stekajack/espresso_patched.git espresso
-
-COPY configs/myconfig.hpp /home/stekajack/espresso/build/myconfig.hpp
+RUN git clone --branch up_to_date_developer https://github.com/stekajack/espresso_patched.git espresso
 
 # Build Espresso
 WORKDIR /home/stekajack/espresso
-RUN cd build && \
-    cmake .. -DESPRESSO_BUILD_WITH_CUDA=OFF -DESPRESSO_BUILD_WITH_NLOPT=ON && \
+RUN mkdir build && cd build && \
+    cmake -DESPRESSO_BUILD_WITH_CUDA=OFF .. && \
     make -j$(nproc)
 
 # Clone and Install Pressomancy
 WORKDIR /home/stekajack
-RUN git clone https://github.com/stekajack/pressomancy.git && \
+RUN git clone --branch latest_espresso_compatible_version https://github.com/stekajack/pressomancy.git && \
     cd pressomancy && \
     pip install -e .
 RUN mkdir DATA_VIEW
