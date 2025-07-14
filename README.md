@@ -112,5 +112,7 @@ wait
 When running MPI jobs, the following flags might help:
 - `--bind-to none`: Uses the container OS scheduler (usually Ubuntu’s CFS scheduler).
 - `--report-bindings`: Prints how each rank sees the underlying sockets/CPUs.
+When running GPU jobs:
+- `--nv`: run a CUDA application inside a container.
 
 Happy Dockerizing and Containerizing!
