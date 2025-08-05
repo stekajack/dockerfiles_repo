@@ -59,6 +59,11 @@ WORKDIR /home/stekajack
 RUN git clone https://github.com/stekajack/pressomancy.git && \
     cd pressomancy && \
     pip install -e .
+
+RUN git clone https://github.com/stekajack/pressomancy-toolbox && \
+    cd pressomancy-toolbox && \
+    pip install -e .
+    
 RUN mkdir DATA
 RUN mkdir UPLOAD_VIEW
 
@@ -76,6 +81,8 @@ RUN apt-get autoremove -y && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Set environment variables for Espresso
 ENV PYTHONPATH="/home/stekajack/espresso/build/src/python"
+ENV PYTHONPATH="/home/stekajack/espressoSq:$PYTHONPATH"
+
 ENV ESPRESSOPATH="/home/stekajack/espresso/build/"
 ENV OMPI_ALLOW_RUN_AS_ROOT=1
 ENV OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
