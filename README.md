@@ -112,7 +112,20 @@ wait
 When running MPI jobs, the following flags might help:
 - `--bind-to none`: Uses the container OS scheduler (usually Ubuntu’s CFS scheduler).
 - `--report-bindings`: Prints how each rank sees the underlying sockets/CPUs.
+- `--bind-to core --map-by slot`: Simple 1 core per rank binding.
+- `--rankfile <file>`: Use a file where explicit rank-to-core bindings are listed, for example:
+  
+  ```bash
+  rank 0=localhost slot=0  
+  rank 1=localhost slot=1  
+  rank 2=localhost slot=2
+  ```
+  
 When running GPU jobs:
-- `--nv`: run a CUDA application inside a container.
+- `--nv`: Run a CUDA application inside a container.
+
+Note that the submission script launches a single container that launches a shell. The shell within the container executes the `mpirun`. It is important to consider how your jobs are orchestrated when running HPC workloads. You can run a separate container for each MPI job, i.e., multiple `apptainer exec ...` commands for each separate `mpirun` you want to launch. 
+
+However, separate containers have no means of coordinating with each other and must be managed from the outside. This can be done with cgroups, for example, but whether you will be able to actually use this approach will vary from cluster to cluster. In my experience, most HPC environments will let you use the rankfile approach without any additional configuration necessary.
 
 Happy Dockerizing and Containerizing!
