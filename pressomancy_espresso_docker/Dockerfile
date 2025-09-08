@@ -37,14 +37,17 @@ RUN pip install --no-cache-dir \
     cython 
 
 # Clone the custom Espresso repository
-RUN git clone --branch milestone_4.2.2 https://github.com/stekajack/espresso_patched.git espresso
+RUN git clone --branch egg_model_andrey_copy https://github.com/stekajack/espresso_patched.git espresso
 
-COPY configs/myconfig.hpp /home/stekajack/espresso/build/myconfig.hpp
+COPY configs/egg_cfg.hpp /home/stekajack/espresso/build/myconfig.hpp
+COPY patches/small_tweak.patch /home/stekajack/patches/small_tweak.patch
 
 # Build Espresso
 WORKDIR /home/stekajack/espresso
+RUN git apply /home/stekajack/patches/small_tweak.patch
+
 RUN cd build && \
-    cmake .. -DESPRESSO_BUILD_WITH_CUDA=OFF -DESPRESSO_BUILD_WITH_NLOPT=ON && \
+    cmake .. -DESPRESSO_BUILD_WITH_CUDA=OFF && \
     make -j$(nproc)
 
 # Clone and Install Pressomancy
