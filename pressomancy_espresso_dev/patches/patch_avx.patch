@@ -1,0 +1,45 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index afa9ac63f..8199756d5 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -97,6 +97,8 @@ option(ESPRESSO_BUILD_WITH_WALBERLA_AVX
+        "Build waLBerla lattice-Boltzmann with AVX vectorization" OFF)
+ option(ESPRESSO_BUILD_WITH_SHARED_MEMORY_PARALLELISM
+        "Build with shared memory parallelism support" OFF)
++option(ESPRESSO_BUILD_WITH_AVX2 "Enable AVX2 optimizations across ESPResSo"
++       OFF)
+ option(ESPRESSO_BUILD_BENCHMARKS "Enable benchmarks" OFF)
+ option(ESPRESSO_BUILD_WITH_VALGRIND "Build with Valgrind instrumentation" OFF)
+ option(ESPRESSO_BUILD_WITH_CALIPER "Build with Caliper instrumentation" OFF)
+@@ -195,6 +197,31 @@ include(CheckCXXCompilerFlag)
+ 
+ add_library(espresso_avx_flags INTERFACE)
+ add_library(espresso::avx_flags ALIAS espresso_avx_flags)
++add_library(espresso_avx2_flags INTERFACE)
++add_library(espresso::avx2_flags ALIAS espresso_avx2_flags)
++set(ESPRESSO_AVX2_GLOBAL_FLAGS_CONFIGURED FALSE CACHE INTERNAL
++    "Track whether global AVX2 flags have been configured")
++
++function(espresso_configure_global_avx2_flags)
++  if(ESPRESSO_AVX2_GLOBAL_FLAGS_CONFIGURED)
++    return()
++  endif()
++  function(espresso_global_avx_flags_callback COMPILER_AVX2_FLAG)
++    target_compile_options(
++      espresso_avx2_flags
++      INTERFACE
++        $<$<COMPILE_LANGUAGE:CXX>:${COMPILER_AVX2_FLAG}>
++        $<$<COMPILE_LANGUAGE:CXX>:-march=native>)
++  endfunction()
++  espresso_enable_avx2_support(espresso_global_avx_flags_callback)
++  set(ESPRESSO_AVX2_GLOBAL_FLAGS_CONFIGURED TRUE CACHE INTERNAL
++      "Track whether global AVX2 flags have been configured")
++endfunction()
++
++if(ESPRESSO_BUILD_WITH_AVX2)
++  espresso_configure_global_avx2_flags()
++  target_link_libraries(espresso_compiler_flags INTERFACE espresso::avx2_flags)
++endif()
+ 
+ #
+ # C/C++ compiler

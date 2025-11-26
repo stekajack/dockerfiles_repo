@@ -38,21 +38,23 @@ RUN pip install --no-cache-dir \
     "Cython>=0.29.28,<3.0.12"
 
 # Clone the custom Espresso repository
-RUN git clone --branch dds_gpu_replica_field_tracking https://github.com/stekajack/espresso_patched.git espresso
+RUN git clone --branch up_to_date_developer https://github.com/stekajack/espresso_patched.git espresso
 COPY configs/myconfig.hpp /home/stekajack/espresso/build/myconfig.hpp
 COPY patches/small_tweak.patch /home/stekajack/patches/small_tweak.patch
+COPY patches/patch_avx.patch /home/stekajack/patches/patch_avx.patch
 
 # Build Espresso
 WORKDIR /home/stekajack/espresso
 RUN git apply /home/stekajack/patches/small_tweak.patch
+RUN git apply /home/stekajack/patches/patch_avx.patch
 
 RUN cd build && \
-    cmake -DESPRESSO_BUILD_WITH_CUDA=ON .. && \
+    cmake -DESPRESSO_BUILD_WITH_CUDA=ON -DESPRESSO_BUILD_WITH_NLOPT=ON -DESPRESSO_BUILD_WITH_SHARED_MEMORY_PARALLELISM=ON -DESPRESSO_BUILD_WITH_FFTW=ON -DESPRESSO_BUILD_WITH_AVX2=ON .. && \
     make -j$(nproc)
 
 # Clone and Install Pressomancy
 WORKDIR /home/stekajack
-RUN git clone --branch latest_espresso_compatible_version https://github.com/stekajack/pressomancy.git && \
+RUN git clone --branch wip_main_branch https://github.com/stekajack/pressomancy.git && \
     cd pressomancy && \
     pip install -e .
 RUN mkdir DATA_VIEW
