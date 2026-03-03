@@ -1,9 +1,9 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index afa9ac63f..8199756d5 100644
+index 5c40b18a1..f5464ea29 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -97,6 +97,8 @@ option(ESPRESSO_BUILD_WITH_WALBERLA_AVX
-        "Build waLBerla lattice-Boltzmann with AVX vectorization" OFF)
+@@ -106,6 +106,8 @@ option(ESPRESSO_BUILD_WITH_WALBERLA_AVX
+        ${ESPRESSO_BUILD_WITH_WALBERLA_AVX_DEFAULT})
  option(ESPRESSO_BUILD_WITH_SHARED_MEMORY_PARALLELISM
         "Build with shared memory parallelism support" OFF)
 +option(ESPRESSO_BUILD_WITH_AVX2 "Enable AVX2 optimizations across ESPResSo"
@@ -11,7 +11,7 @@ index afa9ac63f..8199756d5 100644
  option(ESPRESSO_BUILD_BENCHMARKS "Enable benchmarks" OFF)
  option(ESPRESSO_BUILD_WITH_VALGRIND "Build with Valgrind instrumentation" OFF)
  option(ESPRESSO_BUILD_WITH_CALIPER "Build with Caliper instrumentation" OFF)
-@@ -195,6 +197,31 @@ include(CheckCXXCompilerFlag)
+@@ -208,6 +210,31 @@ include(CheckCXXCompilerFlag)
  
  add_library(espresso_avx_flags INTERFACE)
  add_library(espresso::avx_flags ALIAS espresso_avx_flags)

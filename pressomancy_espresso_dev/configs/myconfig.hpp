@@ -37,8 +37,10 @@
 #define BOND_CONSTRAINT
 
 // Charges and dipoles
+#define ELECTROSTATICS
 #define DIPOLES
 #define DIPOLE_FIELD_TRACKING
+#define THERMAL_STONER_WOHLFARTH
 
 // Force/energy calculation
 #define EXCLUSIONS
@@ -47,6 +49,7 @@
 #define LENNARD_JONES
 #define LENNARD_JONES_GENERIC
 #define WCA
+#define MORSE
 
 // Further features
 #define VIRTUAL_SITES_RELATIVE
