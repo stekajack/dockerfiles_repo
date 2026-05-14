@@ -52,7 +52,7 @@ RUN cd build && \
 
 # Clone and Install Pressomancy
 WORKDIR /home/stekajack
-RUN git clone --branch wip_main_branch https://github.com/stekajack/pressomancy.git && \
+RUN git clone --branch main https://github.com/stekajack/pressomancy.git && \
     cd pressomancy && \
     pip install -e .
 RUN mkdir DATA_VIEW
