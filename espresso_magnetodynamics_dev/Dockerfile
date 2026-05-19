@@ -1,5 +1,5 @@
 # Base image
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 # Set non-interactive frontend to suppress prompts
 ENV DEBIAN_FRONTEND=noninteractive
@@ -14,7 +14,7 @@ RUN apt-get update && \
       python3-pip \
       openmpi-bin \
       libboost-all-dev \
-      fftw3-dev \
+      libfftw3-dev \
       libfftw3-mpi-dev \
       git && \
     apt-get clean && \
@@ -34,15 +34,16 @@ ENV VIRTUAL_ENV="/home/espresso/venv"
 RUN pip install --no-cache-dir \
     numpy \
     scipy \
-    cython
+    "Cython>=0.29.28,<3.0.12"
 
 # Clone the custom Espresso repository
-RUN git clone --branch magnetodynamics_wip https://github.com/stekajack/espresso_patched.git espresso
+RUN git clone --branch experimental_up_to_date_branch https://github.com/stekajack/espresso_patched.git espresso
+COPY configs/myconfig.hpp /home/espresso/espresso/build/myconfig.hpp
 
 # Build Espresso
 WORKDIR /home/espresso/espresso
-RUN mkdir build && cd build && \
-    cmake .. -DESPRESSO_BUILD_WITH_CUDA=OFF -DESPRESSO_BUILD_WITH_NLOPT=ON && \
+RUN cd build && \
+    cmake -DESPRESSO_BUILD_WITH_CUDA=OFF -DESPRESSO_BUILD_WITH_NLOPT=ON .. && \
     make -j$(nproc)
 # Cleanup
 RUN rm -rf /var/cache/* /tmp/* /var/log/* /usr/share/doc/*
