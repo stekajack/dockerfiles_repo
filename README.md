@@ -120,7 +120,29 @@ When running MPI jobs, the following flags might help:
   rank 1=localhost slot=1  
   rank 2=localhost slot=2
   ```
-  
+> [!WARNING]
+> Due to the recent spike in security vulnerabilities found in the Linux kernel, it is possible that your cluster restricted CMA support. OpenMPI may try to use this by default for intra-node shared-memory communication, which can lead to excessive spam output such as:
+>
+> ```text
+> Read -1, expected XXXXX, errno = 1
+> ```
+>
+> and potentially affect performance or stability.
+>
+> You can often circumvent this issue by relying on UCX instead. Most modern OpenMPI builds are probably compiled with UCX support already enabled. You can check this with:
+>
+> ```bash
+> ompi_info | grep -i ucx
+> ```
+>
+> If UCX support is available, adding the following to your `.slurm` script may resolve the issue:
+>
+> ```bash
+> export OMPI_MCA_pml=ucx
+> export OMPI_MCA_osc=ucx
+> export OMPI_MCA_btl=self
+> ```
+
 When running GPU jobs:
 - `--nv`: Run a CUDA application inside a container.
 
