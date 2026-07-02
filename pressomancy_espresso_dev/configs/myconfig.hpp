@@ -41,6 +41,7 @@
 #define DIPOLES
 #define DIPOLE_FIELD_TRACKING
 #define THERMAL_STONER_WOHLFARTH
+#define EGG_MODEL
 
 // Force/energy calculation
 #define EXCLUSIONS

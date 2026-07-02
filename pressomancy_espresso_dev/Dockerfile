@@ -54,7 +54,7 @@ RUN cd build && \
 
 # Clone and Install Pressomancy
 WORKDIR /home/stekajack
-RUN git clone --branch folding_g4_dirty https://github.com/stekajack/pressomancy.git && \
+RUN git clone --branch main https://github.com/stekajack/pressomancy.git && \
     cd pressomancy && \
     pip install -e .
 RUN mkdir DATA_VIEW
