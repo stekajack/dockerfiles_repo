@@ -16,7 +16,7 @@ RUN apt-get update && \
     libboost-all-dev \
     libfftw3-dev \
     libfftw3-mpi-dev \
-    nvidia-cuda-toolkit \
+    # nvidia-cuda-toolkit \
     git && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
@@ -41,15 +41,15 @@ RUN pip install --no-cache-dir \
 RUN git clone --branch experimental_up_to_date_branch https://github.com/stekajack/espresso_patched.git espresso
 COPY configs/myconfig.hpp /home/stekajack/espresso/build/myconfig.hpp
 COPY patches/checkpoint_tweak.patch /home/stekajack/patches/checkpoint_tweak.patch
-COPY patches/avx_tweak.patch /home/stekajack/patches/avx_tweak.patch
+# COPY patches/avx_tweak.patch /home/stekajack/patches/avx_tweak.patch
 
 # Build Espresso
 WORKDIR /home/stekajack/espresso
 RUN git apply /home/stekajack/patches/checkpoint_tweak.patch
-RUN git apply /home/stekajack/patches/avx_tweak.patch
+# RUN git apply /home/stekajack/patches/avx_tweak.patch
 
 RUN cd build && \
-    cmake -DESPRESSO_BUILD_WITH_CUDA=ON -DESPRESSO_BUILD_WITH_NLOPT=ON -DESPRESSO_BUILD_WITH_SHARED_MEMORY_PARALLELISM=ON -DESPRESSO_BUILD_WITH_FFTW=ON -DESPRESSO_BUILD_WITH_AVX2=ON .. && \
+    cmake -DESPRESSO_BUILD_WITH_CUDA=OFF -DESPRESSO_BUILD_WITH_NLOPT=ON -DESPRESSO_BUILD_WITH_SHARED_MEMORY_PARALLELISM=ON -DESPRESSO_BUILD_WITH_FFTW=OFF -DESPRESSO_BUILD_WITH_AVX2=ON .. && \
     make -j$(nproc)
 
 # Clone and Install Pressomancy
