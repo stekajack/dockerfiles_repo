@@ -1,0 +1,471 @@
+#!/usr/bin/env python3
+"""dh: build / push images from this repo and keep their Docker Hub README up to date.
+
+Usage and options: ./dh -h, ./dh <build|push|release> -h (help texts are at the bottom of this file).
+"""
+import argparse
+import base64
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent
+TEMPLATE = REPO / "README.template.md"
+OUT_DIR = REPO / ".dh_out"
+NAMESPACE = "stekajack"
+HUB_API = "https://hub.docker.com/v2"
+MISSING = "—"
+LABEL_DOCKERFILE = "dockerfiles_repo.dockerfile"
+LABEL_DIRTY = "dockerfiles_repo.dirty"
+LABEL_SOURCE = "org.opencontainers.image.source"
+LABEL_REVISION = "org.opencontainers.image.revision"
+
+# metadata prefix -> git remote repository names (lowercase, without .git) that identify it
+PACKAGES = {
+    "ESPRESSO": {"espresso_patched", "espresso"},
+    "PRESSOMANCY": {"pressomancy"},
+    "PRESSOMANCY_TOOLBOX": {"pressomancy-toolbox"},
+    "ESPRESSOSQ": {"espressosq"},
+}
+
+# runs inside the image; prints tab separated records
+INSPECT_SH = r"""
+. /etc/os-release 2>/dev/null; printf 'OS\t%s\n' "${PRETTY_NAME:-unknown}"
+printf 'PYTHON\t%s\n' "$(python3 -c 'import platform; print(platform.python_version())' 2>/dev/null || echo unknown)"
+for c in $(find / -xdev -maxdepth 6 -name CMakeCache.txt 2>/dev/null); do
+  grep -q '^CMAKE_PROJECT_NAME:STATIC=ESPResSo$' "$c" || continue
+  printf 'CMAKE\t%s\t%s\n' "$(sed -n 's/^CMAKE_BUILD_TYPE:STRING=//p' "$c")" \
+    "$(sed -n 's/^ESPRESSO_BUILD_WITH_\([A-Za-z0-9_]*\):BOOL=\(.*\)$/\1=\2/p' "$c" | tr '\n' ' ')"
+  break
+done
+printf 'FEATURES\t%s\n' "$(cd /tmp && timeout 300 python3 -c 'import espressomd; print(" ".join(sorted(espressomd.features())))' 2>/dev/null || echo FAILED)"
+command -v git >/dev/null 2>&1 || { printf 'NOGIT\n'; exit 0; }
+find / -xdev -maxdepth 6 -type d -name .git 2>/dev/null | while read -r g; do
+  d="${g%/.git}"
+  G() { git -c safe.directory='*' -C "$d" "$@"; }
+  printf 'REPO\t%s\t%s\t%s\t%s\t%s\n' "$d" "$(G remote get-url origin 2>/dev/null)" \
+    "$(G rev-parse --abbrev-ref HEAD 2>/dev/null)" \
+    "$(G status --porcelain --untracked-files=no 2>/dev/null | wc -l)" \
+    "$(G log -1 --format='%H%x09%cs%x09%s' 2>/dev/null)"
+done
+"""
+
+
+def die(msg):
+    sys.exit(f"dh: error: {msg}")
+
+
+def run(cmd, **kw):
+    return subprocess.run(cmd, check=True, text=True, **kw)
+
+
+def capture(cmd, **kw):
+    return run(cmd, capture_output=True, **kw).stdout.strip()
+
+
+def github_slug(url):
+    """'https://github.com/o/r.git' or 'git@github.com:o/r' -> 'o/r' (None if not GitHub)."""
+    m = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$", url or "")
+    return m.group(1) if m else None
+
+
+# ---------------------------------------------------------------- image introspection
+
+def inspect_image(ref):
+    try:
+        info = json.loads(capture(["docker", "image", "inspect", ref]))[0]
+    except subprocess.CalledProcessError:
+        die(f"image {ref} not found locally (build or pull it first)")
+    out = capture(["docker", "run", "--rm", "--user", "0", "--entrypoint", "sh", ref, "-c", INSPECT_SH])
+
+    created = datetime.fromisoformat(info["Created"][:19]).replace(tzinfo=timezone.utc)
+    meta = {
+        "IMAGE_NAME": ref.rsplit(":", 1)[0],
+        "IMAGE_TAG": ref.rsplit(":", 1)[1],
+        "IMAGE_ID": info["Id"],
+        "IMAGE_SIZE": f"{info['Size'] / 1e9:.1f} GB (uncompressed)",
+        "BUILD_DATE": created.strftime("%Y-%m-%d %H:%M UTC"),
+        "PUSH_DATE": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+    }
+    for prefix in PACKAGES:
+        meta.update({f"{prefix}_{k}": MISSING for k in
+                     ("SOURCE", "BRANCH", "COMMIT", "COMMIT_LINK", "DATE", "PATCHED", "SUBJECT", "PATH")})
+    meta.update({k: MISSING for k in ("ESPRESSO_BUILD_TYPE", "ESPRESSO_CMAKE_ON", "ESPRESSO_CMAKE_OFF",
+                                      "ESPRESSO_FEATURES")})
+    code_list = lambda items: " ".join(f"`{x}`" for x in items) or MISSING
+
+    for line in out.splitlines():
+        kind, _, rest = line.partition("\t")
+        if kind in ("OS", "PYTHON"):
+            meta[kind if kind == "OS" else "PYTHON_VERSION"] = rest
+        elif kind == "CMAKE":
+            build_type, _, flags = rest.partition("\t")
+            options = dict(f.split("=", 1) for f in flags.split())
+            meta["ESPRESSO_BUILD_TYPE"] = build_type or MISSING
+            meta["ESPRESSO_CMAKE_ON"] = code_list(k for k, v in options.items() if v.upper() in ("ON", "TRUE", "1"))
+            meta["ESPRESSO_CMAKE_OFF"] = code_list(k for k, v in options.items() if v.upper() not in ("ON", "TRUE", "1"))
+        elif kind == "FEATURES":
+            if rest != "FAILED":
+                meta["ESPRESSO_FEATURES"] = code_list(rest.split())
+            elif meta["ESPRESSO_BUILD_TYPE"] != MISSING:  # CMake build found, but the import broke
+                meta["ESPRESSO_FEATURES"] = "`import espressomd` failed"
+        elif kind == "NOGIT":
+            print("dh: warning: git not available in the image, package info will be empty", file=sys.stderr)
+        elif kind == "REPO":
+            fields = rest.split("\t", 6)
+            if len(fields) < 7:
+                continue
+            path, remote, branch, dirty, sha, date, subject = fields
+            name = re.sub(r"\.git$", "", remote.rstrip("/")).rsplit("/", 1)[-1].rsplit(":", 1)[-1].lower()
+            prefix = next((p for p, names in PACKAGES.items() if name in names), None)
+            if prefix is None:
+                continue
+            if meta[f"{prefix}_PATH"] != MISSING:
+                print(f"dh: warning: {prefix} found twice ({meta[f'{prefix}_PATH']}, {path}), using the first",
+                      file=sys.stderr)
+                continue
+            slug = github_slug(remote)
+            n_dirty = int(dirty or 0)
+            meta.update({
+                f"{prefix}_PATH": path,
+                f"{prefix}_SOURCE": slug or remote,
+                f"{prefix}_BRANCH": "detached" if branch == "HEAD" else branch,
+                f"{prefix}_COMMIT": sha,
+                f"{prefix}_COMMIT_LINK": f"[`{sha[:10]}`](https://github.com/{slug}/commit/{sha})" if slug
+                else f"`{sha[:10]}`",
+                f"{prefix}_DATE": date,
+                f"{prefix}_PATCHED": f"yes ({n_dirty} files)" if n_dirty else "no",
+                f"{prefix}_SUBJECT": subject,
+            })
+    return meta
+
+
+def image_labels(ref):
+    return json.loads(capture(["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", ref])) or {}
+
+
+def find_dockerfile(arg):
+    """Dockerfile path from a file or directory, relative to the cwd or to this repo."""
+    for base in (Path.cwd(), REPO):
+        p = (base / arg).resolve()
+        if p.is_dir():
+            p = p / "Dockerfile"
+        if p.is_file():
+            return p
+    die(f"no Dockerfile found at {arg}")
+
+
+def dockerfile_labels(dockerfile):
+    """Labels recording where in this repo (and at which commit) a Dockerfile lives."""
+    if not dockerfile.is_relative_to(REPO):  # set all labels so none are inherited from the base image
+        return {LABEL_DOCKERFILE: str(dockerfile), LABEL_REVISION: "", LABEL_DIRTY: "", LABEL_SOURCE: ""}
+    rel = dockerfile.relative_to(REPO)
+    labels = {LABEL_DOCKERFILE: str(rel),
+              LABEL_REVISION: capture(["git", "-C", str(REPO), "rev-parse", "HEAD"]),
+              LABEL_DIRTY: "true" if capture(["git", "-C", str(REPO), "status", "--porcelain", "--",
+                                              str(rel.parent)]) else "false"}
+    slug = github_slug(capture(["git", "-C", str(REPO), "remote", "get-url", "origin"]))
+    labels[LABEL_SOURCE] = f"https://github.com/{slug}" if slug else ""
+    return labels
+
+
+def dockerfile_meta(labels):
+    path, sha = labels.get(LABEL_DOCKERFILE), labels.get(LABEL_REVISION)
+    if not path:
+        return {"DOCKERFILE_PATH": MISSING, "DOCKERFILES_REPO_COMMIT": MISSING,
+                "DOCKERFILE_LINK": "unknown (image not built with `./dh build`)"}
+    if not sha:
+        return {"DOCKERFILE_PATH": path, "DOCKERFILES_REPO_COMMIT": MISSING, "DOCKERFILE_LINK": f"`{path}`"}
+    slug = github_slug(labels.get(LABEL_SOURCE))
+    link = f"[{path}](https://github.com/{slug}/blob/{sha}/{path})" if slug else f"`{path}` @ `{sha[:10]}`"
+    notes = []
+    if labels.get(LABEL_DIRTY) == "true":
+        notes.append("built with uncommitted changes")
+    try:
+        on_remote = capture(["git", "-C", str(REPO), "branch", "-r", "--contains", sha])
+    except subprocess.CalledProcessError:
+        on_remote = ""
+    if not on_remote:
+        notes.append("commit not pushed to GitHub yet")
+    if notes:
+        link += " (" + "; ".join(notes) + ")"
+    return {"DOCKERFILE_PATH": path, "DOCKERFILES_REPO_COMMIT": sha, "DOCKERFILE_LINK": link}
+
+
+# ---------------------------------------------------------------- README rendering
+
+BLOCK_TEMPLATE_RE = re.compile(r"<!-- TAG-BLOCK-TEMPLATE\n(.*?)\nTAG-BLOCK-TEMPLATE -->\n?", re.S)
+TAG_BLOCK_RE = re.compile(r"<!-- tag:(\S+) -->\n(.*?)\n<!-- /tag:\1 -->", re.S)
+
+
+def fill(text, meta):
+    missing = set()
+
+    def sub(m):
+        if m.group(1) not in meta:
+            missing.add(m.group(1))
+            return m.group(0)
+        return meta[m.group(1)].replace("|", "\\|")  # values end up in markdown tables
+
+    out = re.sub(r"\{\{(\w+)\}\}", sub, text)
+    if missing:
+        die(f"template placeholders without a value: {', '.join(sorted(missing))}")
+    return out
+
+
+def render_readme(meta, current):
+    template = TEMPLATE.read_text()
+    m = BLOCK_TEMPLATE_RE.search(template)
+    if not m or "<!-- TAGS -->" not in template:
+        die(f"{TEMPLATE.name} needs a <!-- TAGS --> marker and a TAG-BLOCK-TEMPLATE comment")
+    header = fill(BLOCK_TEMPLATE_RE.sub("", template), meta)
+    tag = meta["IMAGE_TAG"]
+    new_block = (tag, fill(m.group(1), meta))
+
+    blocks = TAG_BLOCK_RE.findall(current or "")
+    if current and current.strip() and not blocks:
+        print("dh: warning: the current Docker Hub README has no tag blocks; it will be replaced", file=sys.stderr)
+    blocks = [new_block] + [b for b in blocks if b[0] != tag]
+    body = "\n\n".join(f"<!-- tag:{t} -->\n{b}\n<!-- /tag:{t} -->" for t, b in blocks)
+    return header.replace("<!-- TAGS -->", body)
+
+
+# ---------------------------------------------------------------- Docker Hub API
+
+def hub_request(method, path, token=None, data=None):
+    req = urllib.request.Request(f"{HUB_API}{path}", method=method,
+                                 data=json.dumps(data).encode() if data is not None else None)
+    req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read() or b"{}")
+
+
+def hub_readme(image):
+    try:
+        return hub_request("GET", f"/repositories/{image}/").get("full_description") or ""
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return ""  # repository does not exist yet (first push creates it)
+        raise
+
+
+def docker_login_credentials():
+    """(username, secret) from env or from the local `docker login`."""
+    if os.environ.get("DOCKERHUB_USERNAME") and os.environ.get("DOCKERHUB_TOKEN"):
+        return os.environ["DOCKERHUB_USERNAME"], os.environ["DOCKERHUB_TOKEN"]
+    server = "https://index.docker.io/v1/"
+    cfg_path = Path(os.environ.get("DOCKER_CONFIG", Path.home() / ".docker")) / "config.json"
+    cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+    if cfg.get("auths", {}).get(server, {}).get("auth"):
+        user, _, secret = base64.b64decode(cfg["auths"][server]["auth"]).decode().partition(":")
+        return user, secret
+    store = cfg.get("credHelpers", {}).get(server) or cfg.get("credsStore")
+    if store:
+        try:
+            cred = json.loads(capture([f"docker-credential-{store}", "get"], input=server))
+            return cred["Username"], cred["Secret"]
+        except (subprocess.CalledProcessError, FileNotFoundError, KeyError, json.JSONDecodeError):
+            pass
+    return None, None
+
+
+def hub_token():
+    user, secret = docker_login_credentials()
+    if not secret:
+        raise RuntimeError("no Docker Hub credentials found (run `docker login`, or set "
+                           "DOCKERHUB_USERNAME and DOCKERHUB_TOKEN)")
+    attempts = [("/auth/token", {"identifier": user, "secret": secret}, "access_token"),
+                ("/users/login", {"username": user, "password": secret}, "token")]
+    for path, payload, key in attempts:
+        try:
+            token = hub_request("POST", path, data=payload).get(key)
+            if token:
+                return token
+        except urllib.error.HTTPError:
+            pass
+    if secret.count(".") == 2:  # already a JWT (e.g. Docker Desktop OAuth login)
+        return secret
+    raise RuntimeError(f"could not obtain a Docker Hub API token for user {user!r}")
+
+
+def hub_update_readme(image, readme):
+    if len(readme.encode()) > 25000:
+        raise RuntimeError(f"README is {len(readme.encode())} bytes, Docker Hub allows 25000")
+    hub_request("PATCH", f"/repositories/{image}/", token=hub_token(), data={"full_description": readme})
+
+
+# ---------------------------------------------------------------- commands
+
+def image_ref(arg):
+    """'name', 'user/name' or 'user/name:tag' -> 'user/name:tag' (defaults: stekajack/, :latest)."""
+    image, tag = arg.rsplit(":", 1) if ":" in arg.rsplit("/", 1)[-1] else (arg, "latest")
+    if "/" not in image:
+        image = f"{NAMESPACE}/{image}"
+    return f"{image}:{tag}"
+
+
+def cmd_build(args):
+    ref, dockerfile = image_ref(args.image), find_dockerfile(args.file)
+    labels = dockerfile_labels(dockerfile)
+    cmd = (["docker", "build"] + ([] if args.cache else ["--no-cache"]) + ["-f", str(dockerfile), "-t", ref]
+           + [x for k, v in labels.items() for x in ("--label", f"{k}={v}")] + [str(dockerfile.parent)])
+    print("dh:", " ".join(cmd))
+    try:
+        run(cmd)
+    except subprocess.CalledProcessError:
+        die("docker build failed")
+
+
+def cmd_push(args):
+    ref = image_ref(args.image)
+    image, tag = ref.rsplit(":", 1)
+    stem = f"{image.replace('/', '_')}_{tag}"
+    meta_file, readme_file = OUT_DIR / f"{stem}.meta.env", OUT_DIR / f"{stem}.README.md"
+    keep = args.keep
+    try:
+        print(f"dh: inspecting {ref}")
+        meta = inspect_image(ref)
+        labels = image_labels(ref)
+        if LABEL_DOCKERFILE not in labels and args.file:
+            labels = dockerfile_labels(find_dockerfile(args.file))  # image not built by dh: use -f at HEAD
+        meta.update(dockerfile_meta(labels))
+        OUT_DIR.mkdir(exist_ok=True)
+        meta_file.write_text("".join(f"{k}={v}\n" for k, v in sorted(meta.items())))
+        readme = render_readme(meta, hub_readme(image))
+        readme_file.write_text(readme)
+
+        if args.dry_run:
+            print(readme)
+            print(f"dh: dry run, nothing pushed ({len(readme.encode())} bytes)")
+            return
+        if not args.readme_only:
+            print(f"dh: docker push {ref}")
+            try:
+                run(["docker", "push", ref])
+            except subprocess.CalledProcessError:
+                die("docker push failed, Docker Hub README left untouched")
+        print(f"dh: updating README of {image} on Docker Hub")
+        try:
+            hub_update_readme(image, readme)
+        except (RuntimeError, urllib.error.URLError) as e:
+            keep = True
+            detail = e.read().decode(errors="replace")[:300] if isinstance(e, urllib.error.HTTPError) else ""
+            die(f"README update failed: {e} {detail}\n"
+                f"  the image push itself succeeded; retry with: ./dh push {ref} --readme-only\n"
+                f"  kept {meta_file} and {readme_file}")
+        print(f"dh: done, https://hub.docker.com/r/{image}")
+    finally:
+        if keep:
+            if meta_file.exists():
+                print(f"dh: kept {meta_file} and {readme_file}")
+        else:
+            meta_file.unlink(missing_ok=True)
+            readme_file.unlink(missing_ok=True)
+            if OUT_DIR.exists() and not any(OUT_DIR.iterdir()):
+                OUT_DIR.rmdir()
+
+
+def cmd_release(args):
+    cmd_build(args)
+    cmd_push(args)
+
+
+HELP_MAIN = """\
+Build images from this repo and push them with an auto-generated Docker Hub README.
+
+typical use:
+  ./dh build -f pressomancy_espresso_dev pressomancy_espresso_dev:latest
+  ./dh push pressomancy_espresso_dev:latest --dry-run     # look at the README first
+  ./dh push pressomancy_espresso_dev:latest
+
+run ./dh <command> -h for the options of each command.
+"""
+
+HELP_IMAGE = (f"image name, optionally with :TAG. A name without a namespace gets {NAMESPACE}/ in front, "
+              "a missing tag means :latest (foo -> {NAMESPACE}/foo:latest)").replace("{NAMESPACE}", NAMESPACE)
+
+HELP_BUILD = """\
+Runs `docker build --no-cache -f <Dockerfile> -t IMAGE <Dockerfile's directory>`.
+The Dockerfile path and this repo's git commit are stored as image labels, so that
+`push` can later link the exact Dockerfile in the README.
+"""
+
+HELP_PUSH = f"""\
+Documents and pushes a local image. Steps:
+  1. inspect the image: git branch/commit of each tracked package, ESPResSo CMake flags,
+     espressomd.features(), OS, Python, size
+  2. write the metadata file   .dh_out/<image>_<tag>.meta.env
+  3. render {TEMPLATE.name} into   .dh_out/<image>_<tag>.README.md
+     (the current Docker Hub README is downloaded and this tag's section is added at the top,
+     or replaces the existing section of the same tag; other tags' sections are kept)
+  4. docker push IMAGE              (skipped with --readme-only)
+  5. upload the README to Docker Hub (skipped with --dry-run; not done if step 4 failed)
+  6. delete the two .dh_out files   (skipped with --keep)
+
+option combinations:
+  (none)                    full push: image + README, temp files deleted
+  --dry-run                 steps 1-3 only, prints the README; nothing is pushed or uploaded
+  --dry-run --keep          same, and keeps the files in .dh_out/ to look at
+  --readme-only             steps 1-3, 5, 6: update the README of an image that is already
+                            on Docker Hub (e.g. to retry after a failed README upload, or to
+                            document an image pushed without dh); the image must exist locally
+  --readme-only --keep      same, and keeps the files in .dh_out/
+  --dry-run --readme-only   --dry-run wins: nothing is pushed or uploaded
+
+If the README upload fails, the files are kept automatically and the retry command is printed.
+Docker Hub login: taken from `docker login`, or from DOCKERHUB_USERNAME + DOCKERHUB_TOKEN.
+"""
+
+HELP_RELEASE = """\
+`build` followed by `push` (see ./dh build -h and ./dh push -h). Stops if the build fails.
+"""
+
+
+def main():
+    fmt = argparse.RawDescriptionHelpFormatter
+    p = argparse.ArgumentParser(prog="dh", description=HELP_MAIN, formatter_class=fmt)
+    sub = p.add_subparsers(dest="command", required=True, title="commands", metavar="{build,push,release}")
+
+    def add(name, func, summary, description, file_help):
+        s = sub.add_parser(name, help=summary, description=description, formatter_class=fmt)
+        s.add_argument("image", metavar="IMAGE[:TAG]", help=HELP_IMAGE)
+        s.add_argument("-f", "--file", metavar="DOCKERFILE", required=func is not cmd_push, help=file_help)
+        s.set_defaults(func=func, dry_run=False, readme_only=False, keep=False, cache=False)
+        return s
+
+    file_help = ("Dockerfile, or the directory containing it; relative to the current directory "
+                 "or to this repo (required)")
+    help_cache = "use docker's build cache (default: --no-cache, i.e. rebuild everything from scratch)"
+    help_keep = "keep .dh_out/<image>_<tag>.meta.env and .README.md instead of deleting them at the end"
+
+    b = add("build", cmd_build, "docker build an image from a Dockerfile (records the Dockerfile in image labels)", HELP_BUILD, file_help)
+    b.add_argument("--cache", action="store_true", help=help_cache)
+
+    ps = add("push", cmd_push, "docker push an image, then add/replace its tag's section in the Docker Hub README", HELP_PUSH,
+             "only for images NOT built with ./dh build: the Dockerfile to link in the README "
+             "(dh-built images already carry this; they ignore -f)")
+    ps.add_argument("--dry-run", action="store_true",
+                    help="only inspect the image and print the README; push and upload nothing")
+    ps.add_argument("--readme-only", action="store_true",
+                    help="skip `docker push`, only upload the README (image already on Docker Hub)")
+    ps.add_argument("--keep", action="store_true", help=help_keep)
+
+    r = add("release", cmd_release, "build, then push", HELP_RELEASE, file_help)
+    r.add_argument("--cache", action="store_true", help=help_cache)
+    r.add_argument("--keep", action="store_true", help=help_keep)
+
+    sys.stdout.reconfigure(line_buffering=True)  # keep dh messages in order with docker's output
+    args = p.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
